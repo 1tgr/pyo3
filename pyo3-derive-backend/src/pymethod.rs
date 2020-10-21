@@ -488,11 +488,17 @@ fn impl_arg_param(
     let arg_value = quote!(output[#option_pos]);
     *option_pos += 1;
 
-    let default = match (spec.default_value(name), arg.optional.is_some()) {
-        (Some(default), true) if default.to_string() != "None" => quote! { Some(#default) },
-        (Some(default), _) => quote! { #default },
-        (None, true) => quote! { None },
-        (None, false) => quote! { panic!("Failed to extract required method argument") },
+    let arg_value_or_default = match (spec.default_value(name), arg.optional.is_some()) {
+        (Some(default), true) if default.to_string() != "None" => {
+            quote! { #arg_value.map_or_else(|| Ok(Some(#default)), |obj| obj.extract())? }
+        }
+        (Some(default), _) => {
+            quote! { #arg_value.map_or_else(|| Ok(#default), |obj| obj.extract())? }
+        }
+        (None, true) => quote! { #arg_value.map_or(Ok(None), |obj| obj.extract())? },
+        (None, false) => {
+            quote! { #arg_value.expect("Failed to extract required method argument").extract()? }
+        }
     };
 
     return if let syn::Type::Reference(tref) = arg.optional.as_ref().unwrap_or(&ty) {
@@ -517,18 +523,12 @@ fn impl_arg_param(
         };
 
         quote! {
-            let #mut_ _tmp: #target_ty = match #arg_value {
-                Some(_obj) => _obj.extract()?,
-                None => #default,
-            };
+            let #mut_ _tmp: #target_ty = #arg_value_or_default;
             let #arg_name = #borrow_tmp;
         }
     } else {
         quote! {
-            let #arg_name = match #arg_value {
-                Some(_obj) => _obj.extract()?,
-                None => #default,
-            };
+            let #arg_name = #arg_value_or_default;
         }
     };
 
