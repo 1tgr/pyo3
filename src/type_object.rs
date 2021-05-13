@@ -3,10 +3,10 @@
 
 use crate::conversion::IntoPyPointer;
 use crate::once_cell::GILOnceCell;
-use crate::pyclass::{initialize_type_object, py_class_attributes, PyClass};
+use crate::pyclass::{initialize_type_object, PyClass};
 use crate::pyclass_init::PyObjectInit;
 use crate::types::{PyAny, PyType};
-use crate::{ffi, AsPyPointer, PyErr, PyNativeType, PyObject, PyResult, Python};
+use crate::{ffi, AsPyPointer, PyErr, PyMethodDefType, PyNativeType, PyObject, PyResult, Python};
 use parking_lot::{const_mutex, Mutex};
 use std::thread::{self, ThreadId};
 
@@ -165,6 +165,17 @@ impl LazyStaticType {
             Box::into_raw(type_object)
         });
 
+        self.ensure_init(py, type_object, T::NAME, &T::py_methods);
+        type_object
+    }
+
+    fn ensure_init(
+        &self,
+        py: Python,
+        type_object: *mut ffi::PyTypeObject,
+        name: &str,
+        py_methods: &dyn Fn() -> Vec<&'static PyMethodDefType>,
+    ) {
         // We might want to fill the `tp_dict` with python instances of `T`
         // itself. In order to do so, we must first initialize the type object
         // with an empty `tp_dict`: now we can create instances of `T`.
@@ -178,7 +189,7 @@ impl LazyStaticType {
 
         if self.tp_dict_filled.get(py).is_some() {
             // `tp_dict` is already filled: ok.
-            return type_object;
+            return;
         }
 
         {
@@ -187,7 +198,7 @@ impl LazyStaticType {
             if threads.contains(&thread_id) {
                 // Reentrant call: just return the type object, even if the
                 // `tp_dict` is not filled yet.
-                return type_object;
+                return;
             }
             threads.push(thread_id);
         }
@@ -197,8 +208,10 @@ impl LazyStaticType {
         // means that another thread can continue the initialization in the
         // meantime: at worst, we'll just make a useless computation.
         let mut items = vec![];
-        for attr in py_class_attributes::<T>() {
-            items.push((attr.name, (attr.meth)(py)));
+        for def in py_methods() {
+            if let PyMethodDefType::ClassAttribute(attr) = def {
+                items.push((attr.name, (attr.meth)(py)));
+            }
         }
 
         // Now we hold the GIL and we can assume it won't be released until we
@@ -217,10 +230,8 @@ impl LazyStaticType {
 
         if let Err(err) = result {
             err.clone_ref(py).print(py);
-            panic!("An error occured while initializing `{}.__dict__`", T::NAME);
+            panic!("An error occured while initializing `{}.__dict__`", name);
         }
-
-        type_object
     }
 }
 

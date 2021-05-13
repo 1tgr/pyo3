@@ -1,5 +1,5 @@
 //! `PyClass` and related traits.
-use crate::class::methods::{PyClassAttributeDef, PyMethodDefType, PyMethods};
+use crate::class::methods::{PyMethodDefType, PyMethods};
 use crate::class::proto_methods::PyProtoMethods;
 use crate::conversion::{AsPyPointer, FromPyPointer};
 use crate::derive_utils::PyBaseTypeUtils;
@@ -186,7 +186,8 @@ where
     // buffer protocol
     type_object.tp_as_buffer = T::buffer_methods().map_or_else(ptr::null_mut, |p| p.as_ptr());
 
-    let (new, call, mut methods) = py_class_method_defs::<T>();
+    let py_methods = T::py_methods();
+    let (new, call, mut methods) = py_class_method_defs(&py_methods);
 
     // normal methods
     if !methods.is_empty() {
@@ -200,7 +201,7 @@ where
     type_object.tp_call = call;
 
     // properties
-    let mut props = py_class_properties::<T>();
+    let mut props = py_class_properties(&py_methods);
 
     if !T::Dict::IS_DUMMY {
         props.push(ffi::PyGetSetDef_DICT);
@@ -211,7 +212,7 @@ where
     }
 
     // set type flags
-    py_class_flags::<T>(type_object);
+    py_class_flags(type_object, T::FLAGS);
 
     // register type object
     unsafe {
@@ -223,28 +224,23 @@ where
     }
 }
 
-fn py_class_flags<T: PyTypeInfo>(type_object: &mut ffi::PyTypeObject) {
+fn py_class_flags(type_object: &mut ffi::PyTypeObject, flags: usize) {
     if type_object.tp_traverse != None
         || type_object.tp_clear != None
-        || T::FLAGS & type_flags::GC != 0
+        || flags & type_flags::GC != 0
     {
         type_object.tp_flags = ffi::Py_TPFLAGS_DEFAULT | ffi::Py_TPFLAGS_HAVE_GC;
     } else {
         type_object.tp_flags = ffi::Py_TPFLAGS_DEFAULT;
     }
-    if T::FLAGS & type_flags::BASETYPE != 0 {
+    if flags & type_flags::BASETYPE != 0 {
         type_object.tp_flags |= ffi::Py_TPFLAGS_BASETYPE;
     }
 }
 
-pub(crate) fn py_class_attributes<T: PyMethods>() -> impl Iterator<Item = PyClassAttributeDef> {
-    T::py_methods().into_iter().filter_map(|def| match def {
-        PyMethodDefType::ClassAttribute(attr) => Some(*attr),
-        _ => None,
-    })
-}
-
-fn py_class_method_defs<T: PyMethods>() -> (
+fn py_class_method_defs(
+    methods: &[&PyMethodDefType],
+) -> (
     Option<ffi::newfunc>,
     Option<ffi::PyCFunctionWithKeywords>,
     Vec<ffi::PyMethodDef>,
@@ -253,7 +249,7 @@ fn py_class_method_defs<T: PyMethods>() -> (
     let mut call = None;
     let mut new = None;
 
-    for def in T::py_methods() {
+    for def in methods.iter() {
         match *def {
             PyMethodDefType::New(ref def) => {
                 if let class::methods::PyMethodType::PyNewFunc(meth) = def.ml_meth {
@@ -279,10 +275,10 @@ fn py_class_method_defs<T: PyMethods>() -> (
     (new, call, defs)
 }
 
-fn py_class_properties<T: PyMethods>() -> Vec<ffi::PyGetSetDef> {
+fn py_class_properties(methods: &[&PyMethodDefType]) -> Vec<ffi::PyGetSetDef> {
     let mut defs = std::collections::HashMap::new();
 
-    for def in T::py_methods() {
+    for def in methods.iter() {
         match *def {
             PyMethodDefType::Getter(ref getter) => {
                 let name = getter.name.to_string();
