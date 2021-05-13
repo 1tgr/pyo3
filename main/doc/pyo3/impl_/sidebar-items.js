@@ -1,0 +1,1 @@
+initSidebarItems({"mod":[["deprecations","Symbols to represent deprecated uses of PyO3’s macros."]]});
